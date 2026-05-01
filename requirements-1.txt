@@ -1,0 +1,20 @@
+# ── Telegram Bot Framework ────────────────────────────────────────────────────
+aiogram==3.13.1
+
+# ── Async SQLite ──────────────────────────────────────────────────────────────
+aiosqlite==0.20.0
+
+# ── Computer Vision (headless = no GUI dependencies, ideal for Linux servers) ─
+opencv-python-headless==4.10.0.84
+
+# ── Image Processing ──────────────────────────────────────────────────────────
+Pillow==10.4.0
+
+# ── Image → PDF (lossless, fast) ──────────────────────────────────────────────
+img2pdf==0.5.1
+
+# ── OpenAI GPT-4o Vision API ─────────────────────────────────────────────────
+openai==1.50.2
+
+# ── Numpy (required by OpenCV) ────────────────────────────────────────────────
+numpy==1.26.4
