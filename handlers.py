@@ -1,16 +1,5 @@
 """
-handlers.py — All aiogram 3.x message / callback handlers.
-
-Structure
----------
-  • User registration middleware
-  • /start, /help, /premium commands
-  • Scan mode selection (A4, Passport, ID Card, Photo)
-  • Filter selection (Magic Color, B&W)
-  • Image processing pipeline
-  • AI assistant (ask questions about scanned docs)
-  • Premium purchase flow (upload receipt → admin approval)
-  • Admin panel (set card number, broadcast, approve/decline payments)
+handlers.py — Barcha aiogram 3.x handlerlar o'zbek tilida.
 """
 
 import io
@@ -27,119 +16,109 @@ from aiogram.fsm.state import State, StatesGroup
 
 import database as db
 import utils
-from config import ADMIN_ID, WATERMARK_TEXT, BOT_USERNAME
+from config import ADMIN_ID, BOT_USERNAME
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  FSM STATE GROUPS
+#  FSM HOLATLARI
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ScanSession(StatesGroup):
-    """Tracks the user's active scan: which mode/filter, buffered images."""
-    choosing_mode    = State()
-    choosing_filter  = State()
-    collecting_images = State()
-    waiting_ai_question = State()
+    rejim_tanlash      = State()
+    filtr_tanlash      = State()
+    rasm_qabul         = State()
+    ai_savol_kutish    = State()
 
 
-class AdminStates(StatesGroup):
-    """Admin FSM: awaiting broadcast text or new card number."""
-    waiting_broadcast_msg = State()
-    waiting_card_number   = State()
+class AdminHolat(StatesGroup):
+    xabar_kutish  = State()
+    karta_kutish  = State()
 
 
-class PaymentStates(StatesGroup):
-    """User FSM: waiting for the user to upload their payment receipt."""
-    waiting_receipt = State()
+class TulovHolat(StatesGroup):
+    chek_kutish = State()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  KEYBOARDS — helper functions
+#  KLAVIATURALAR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main_menu_kb(is_premium: bool = False) -> InlineKeyboardMarkup:
-    """Main menu shown after /start."""
-    plan_label = "⭐ Premium Active" if is_premium else "💎 Get Premium"
+def asosiy_menu(premium: bool = False) -> InlineKeyboardMarkup:
+    tarif = "⭐ Premium faol" if premium else "💎 Premium olish"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📄 Scan Document", callback_data="scan_start"),
-            InlineKeyboardButton(text="🤖 AI Assistant",  callback_data="ai_start"),
+            InlineKeyboardButton(text="📄 Hujjat skanerlash", callback_data="scan_start"),
+            InlineKeyboardButton(text="🤖 AI Yordamchi",      callback_data="ai_start"),
         ],
         [
-            InlineKeyboardButton(text=plan_label,          callback_data="premium_info"),
-            InlineKeyboardButton(text="📞 Contact Admin",  callback_data="contact_admin"),
+            InlineKeyboardButton(text=tarif,                   callback_data="premium_info"),
+            InlineKeyboardButton(text="📞 Admin bilan bog'lanish", callback_data="contact_admin"),
         ],
         [
-            InlineKeyboardButton(text="ℹ️ Help",           callback_data="help"),
+            InlineKeyboardButton(text="ℹ️ Yordam",             callback_data="help"),
         ],
     ])
 
 
-def mode_selection_kb() -> InlineKeyboardMarkup:
-    """Scan mode picker."""
+def rejim_klaviatura() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📄 A4 Document", callback_data="mode_a4"),
-            InlineKeyboardButton(text="🛂 Passport",   callback_data="mode_passport"),
+            InlineKeyboardButton(text="📄 A4 Hujjat",   callback_data="mode_a4"),
+            InlineKeyboardButton(text="🛂 Pasport",     callback_data="mode_passport"),
         ],
         [
-            InlineKeyboardButton(text="🪪 ID Card",    callback_data="mode_id_card"),
-            InlineKeyboardButton(text="🖼 Photo",       callback_data="mode_photo"),
+            InlineKeyboardButton(text="🪪 ID Karta",    callback_data="mode_id_card"),
+            InlineKeyboardButton(text="🖼 Rasm",         callback_data="mode_photo"),
         ],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")],
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="main_menu")],
     ])
 
 
-def filter_selection_kb() -> InlineKeyboardMarkup:
-    """Filter picker shown after mode is chosen."""
+def filtr_klaviatura() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✨ Magic Color", callback_data="filter_magic_color"),
-            InlineKeyboardButton(text="⚫ B&W",          callback_data="filter_bw"),
+            InlineKeyboardButton(text="✨ Sehrli Rang", callback_data="filter_magic_color"),
+            InlineKeyboardButton(text="⚫ Qora-Oq",     callback_data="filter_bw"),
         ],
         [
-            InlineKeyboardButton(text="🎨 No Filter",   callback_data="filter_none"),
+            InlineKeyboardButton(text="🎨 Filtrsiz",    callback_data="filter_none"),
         ],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="scan_start")],
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="scan_start")],
     ])
 
 
-def ready_to_process_kb() -> InlineKeyboardMarkup:
-    """Shown while user is sending images; lets them trigger PDF generation."""
+def pdf_tayyor_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Generate PDF",    callback_data="generate_pdf")],
-        [InlineKeyboardButton(text="🗑 Clear & Restart", callback_data="clear_session")],
+        [InlineKeyboardButton(text="✅ PDF yaratish",      callback_data="generate_pdf")],
+        [InlineKeyboardButton(text="🗑 Tozalab qaytish",   callback_data="clear_session")],
     ])
 
 
 def admin_panel_kb() -> InlineKeyboardMarkup:
-    """Admin control panel."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Set Card Number", callback_data="admin_set_card")],
-        [InlineKeyboardButton(text="📢 Broadcast",       callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="📊 Statistics",      callback_data="admin_stats")],
+        [InlineKeyboardButton(text="💳 Karta raqamini yangilash", callback_data="admin_set_card")],
+        [InlineKeyboardButton(text="📢 Hammaga xabar yuborish",   callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📊 Statistika",               callback_data="admin_stats")],
     ])
 
 
-def payment_approval_kb(request_id: int) -> InlineKeyboardMarkup:
-    """Approve / Decline buttons forwarded to admin with the receipt."""
+def tulov_tasdiqlash_kb(request_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Approve",  callback_data=f"pay_approve:{request_id}"),
-            InlineKeyboardButton(text="❌ Decline",  callback_data=f"pay_decline:{request_id}"),
+            InlineKeyboardButton(text="✅ Tasdiqlash",  callback_data=f"pay_approve:{request_id}"),
+            InlineKeyboardButton(text="❌ Rad etish",   callback_data=f"pay_decline:{request_id}"),
         ]
     ])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  REGISTRATION HELPER
+#  FOYDALANUVCHINI RO'YXATDAN O'TKAZISH
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def register_user(message: Message):
-    """Ensure the user exists in the database before any handler runs."""
+async def foydalanuvchi_qoshish(message: Message):
     user = message.from_user
     await db.add_or_update_user(
         user_id   = user.id,
@@ -154,606 +133,575 @@ async def register_user(message: Message):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    await register_user(message)
+    await foydalanuvchi_qoshish(message)
     await state.clear()
 
-    user      = message.from_user
-    premium   = await db.is_premium(user.id)
-    plan_text = "⭐ **Premium**" if premium else "🆓 **Free**"
+    user    = message.from_user
+    premium = await db.is_premium(user.id)
+    tarif   = "⭐ **Premium**" if premium else "🆓 **Bepul**"
 
-    text = (
-        f"👋 Welcome, **{user.first_name}**!\n\n"
-        f"🤖 I'm your **AI Document Scanner** — powered by advanced CV and GPT-4o.\n\n"
-        f"📌 Your current plan: {plan_text}\n\n"
-        f"What would you like to do today?"
+    matn = (
+        f"👋 Xush kelibsiz, **{user.first_name}**!\n\n"
+        f"🤖 Men — **AI Hujjat Skaneri**. OpenCV va GPT-4o yordamida ishlayman.\n\n"
+        f"📌 Sizning tarifingiz: {tarif}\n\n"
+        f"Bugun nima qilmoqchisiz?"
     )
-    await message.answer(text, parse_mode="Markdown",
-                         reply_markup=main_menu_kb(premium))
+    await message.answer(matn, parse_mode="Markdown",
+                         reply_markup=asosiy_menu(premium))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  MAIN MENU callback
+#  ASOSIY MENYU
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "main_menu")
-async def cb_main_menu(call: CallbackQuery, state: FSMContext):
+async def cb_asosiy_menu(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    user    = call.from_user
-    premium = await db.is_premium(user.id)
+    premium = await db.is_premium(call.from_user.id)
     await call.message.edit_text(
-        f"🏠 **Main Menu** — choose an action:",
+        "🏠 **Asosiy Menyu** — kerakli bo'limni tanlang:",
         parse_mode="Markdown",
-        reply_markup=main_menu_kb(premium)
+        reply_markup=asosiy_menu(premium)
     )
     await call.answer()
 
 
 @router.callback_query(F.data == "help")
-async def cb_help(call: CallbackQuery):
-    text = (
-        "ℹ️ **How to use the bot**\n\n"
-        "1️⃣ Tap **Scan Document** and choose a mode.\n"
-        "2️⃣ Select a filter (Magic Color or B&W).\n"
-        "3️⃣ Send one or more photos.\n"
-        "4️⃣ Tap **Generate PDF** to download your file.\n\n"
-        "🤖 Use **AI Assistant** to ask questions about any scanned image.\n\n"
-        "💎 **Premium** users get:\n"
-        "  • No watermarks\n"
-        "  • Faster processing\n"
-        "  • Higher output quality\n\n"
-        "📞 Tap **Contact Admin** for support."
+async def cb_yordam(call: CallbackQuery):
+    matn = (
+        "ℹ️ **Botdan foydalanish yo'riqnomasi**\n\n"
+        "1️⃣ **Hujjat skanerlash** tugmasini bosing.\n"
+        "2️⃣ Rejimni tanlang (A4, Pasport, ID Karta, Rasm).\n"
+        "3️⃣ Filtrni tanlang (Sehrli Rang yoki Qora-Oq).\n"
+        "4️⃣ Bir yoki bir nechta rasm yuboring.\n"
+        "5️⃣ **PDF yaratish** tugmasini bosing.\n\n"
+        "🤖 **AI Yordamchi** — skaner qilingan rasm haqida savol bering yoki tarjima qilish uchun foydalaning.\n\n"
+        "💎 **Premium** afzalliklari:\n"
+        "  • PDF da suv belgisi yo'q\n"
+        "  • Tezkor ishlov berish\n"
+        "  • Yuqori sifatli chiqish\n"
+        "  • Cheksiz skanerlash\n\n"
+        "📞 Yordam uchun **Admin bilan bog'lanish** tugmasini bosing."
     )
-    await call.message.edit_text(text, parse_mode="Markdown",
+    await call.message.edit_text(matn, parse_mode="Markdown",
                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                     [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+                                     [InlineKeyboardButton(text="🔙 Orqaga", callback_data="main_menu")]
                                  ]))
     await call.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  CONTACT ADMIN
+#  ADMIN BILAN BOG'LANISH
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "contact_admin")
-async def cb_contact_admin(call: CallbackQuery):
+async def cb_admin_boglanish(call: CallbackQuery):
     await call.message.edit_text(
-        f"📞 **Contact Admin**\n\n"
-        f"For support, billing questions, or feedback:\n"
-        f"👤 [@{BOT_USERNAME}_admin](tg://user?id={ADMIN_ID})\n\n"
-        f"Or send a direct message — the admin will respond as soon as possible.",
+        f"📞 **Admin bilan bog'lanish**\n\n"
+        f"Yordam, to'lov yoki taklif uchun:\n"
+        f"👤 [Admin](tg://user?id={ADMIN_ID})\n\n"
+        f"Xabar yuboring — admin imkon qadar tez javob beradi. 🙏",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="main_menu")]
         ])
     )
     await call.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  PREMIUM INFO & PURCHASE FLOW
+#  PREMIUM
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "premium_info")
-async def cb_premium_info(call: CallbackQuery, state: FSMContext):
+async def cb_premium(call: CallbackQuery, state: FSMContext):
     user    = call.from_user
     premium = await db.is_premium(user.id)
 
     if premium:
         await call.message.edit_text(
-            "⭐ You already have **Premium** access!\n\n"
-            "Enjoy watermark-free PDFs and high-quality scans.",
+            "⭐ Siz allaqachon **Premium** foydalanuvchisiz!\n\n"
+            "Suv belgisisiz PDF va yuqori sifatli skanerlashdan bahramand bo'ling! 🎉",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Back", callback_data="main_menu")]
+                [InlineKeyboardButton(text="🔙 Orqaga", callback_data="main_menu")]
             ])
         )
     else:
-        card = await db.get_setting("card_number", "Not set — contact admin.")
+        karta = await db.get_setting("card_number", "Hali o'rnatilmagan — admin bilan bog'laning.")
         await call.message.edit_text(
-            "💎 **Upgrade to Premium**\n\n"
-            "✅ No watermarks on PDFs\n"
-            "✅ High-speed processing\n"
-            "✅ Maximum image quality\n"
-            "✅ Unlimited scans\n\n"
-            f"💳 **Payment Card:** `{card}`\n\n"
-            "After payment, tap the button below and upload a screenshot of your receipt. "
-            "The admin will verify and activate your premium within minutes.",
+            "💎 **Premium Tarifga O'tish**\n\n"
+            "✅ PDF da suv belgisi yo'q\n"
+            "✅ Tezkor ishlov berish\n"
+            "✅ Maksimal sifat\n"
+            "✅ Cheksiz skanerlash\n\n"
+            f"💳 **To'lov Kartasi:** `{karta}`\n\n"
+            "To'lov qilgandan so'ng, quyidagi tugmani bosing va to'lov chekining "
+            "screenshotini yuboring. Admin tekshirib, premiumingizni faollashtiradi.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📸 Upload Receipt", callback_data="upload_receipt")],
-                [InlineKeyboardButton(text="🔙 Back",           callback_data="main_menu")],
+                [InlineKeyboardButton(text="📸 Chek yuborish", callback_data="upload_receipt")],
+                [InlineKeyboardButton(text="🔙 Orqaga",        callback_data="main_menu")],
             ])
         )
     await call.answer()
 
 
 @router.callback_query(F.data == "upload_receipt")
-async def cb_upload_receipt(call: CallbackQuery, state: FSMContext):
-    await state.set_state(PaymentStates.waiting_receipt)
+async def cb_chek_yuklash(call: CallbackQuery, state: FSMContext):
+    await state.set_state(TulovHolat.chek_kutish)
     await call.message.edit_text(
-        "📸 Please send a **screenshot** of your payment receipt.\n\n"
-        "The admin will review and activate your Premium plan shortly.",
+        "📸 **To'lov chekini yuboring**\n\n"
+        "To'lov screenshotini shu yerga yuboring.\n"
+        "Admin tekshirib, Premium tarifingizni faollashtiradi. ⏳",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu")]
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="main_menu")]
         ])
     )
     await call.answer()
 
 
-@router.message(PaymentStates.waiting_receipt, F.photo)
-async def handle_payment_receipt(message: Message, state: FSMContext, bot: Bot):
-    """User uploaded a payment receipt photo → forward to admin for review."""
+@router.message(TulovHolat.chek_kutish, F.photo)
+async def chek_qabul(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
-    user = message.from_user
-
-    # Create a pending payment request in the DB
+    user       = message.from_user
     request_id = await db.create_payment_request(user.id)
 
-    # Forward the screenshot to the admin with Approve / Decline buttons
-    caption = (
-        f"💳 **New Premium Payment Request**\n\n"
-        f"👤 User: [{user.full_name}](tg://user?id={user.id})\n"
-        f"🆔 User ID: `{user.id}`\n"
-        f"🔖 Username: @{user.username or 'N/A'}\n"
-        f"📋 Request ID: `{request_id}`"
+    izoh = (
+        f"💳 **Yangi Premium So'rovi**\n\n"
+        f"👤 Foydalanuvchi: [{user.full_name}](tg://user?id={user.id})\n"
+        f"🆔 ID: `{user.id}`\n"
+        f"🔖 Username: @{user.username or 'Yo\'q'}\n"
+        f"📋 So'rov ID: `{request_id}`"
     )
-    sent = await bot.send_photo(
-        chat_id     = ADMIN_ID,
-        photo       = message.photo[-1].file_id,
-        caption     = caption,
-        parse_mode  = "Markdown",
-        reply_markup = payment_approval_kb(request_id)
+    yuborildi = await bot.send_photo(
+        chat_id      = ADMIN_ID,
+        photo        = message.photo[-1].file_id,
+        caption      = izoh,
+        parse_mode   = "Markdown",
+        reply_markup = tulov_tasdiqlash_kb(request_id)
     )
-
-    # Store the admin-side message_id so we could reference/edit it later
-    await db.set_payment_admin_message(request_id, sent.message_id)
+    await db.set_payment_admin_message(request_id, yuborildi.message_id)
 
     await message.answer(
-        "✅ Your receipt has been forwarded to the admin for review.\n"
-        "You will receive a notification once your Premium is activated. ⏳",
+        "✅ Chekingiz adminga yuborildi!\n"
+        "Premium faollashtirilgach sizga xabar beriladi. ⏳",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu")]
+            [InlineKeyboardButton(text="🏠 Asosiy Menyu", callback_data="main_menu")]
         ])
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ADMIN — Approve / Decline payments
+#  ADMIN — TASDIQLASH / RAD ETISH
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("pay_approve:"))
-async def cb_pay_approve(call: CallbackQuery, bot: Bot):
+async def cb_tasdiqlash(call: CallbackQuery, bot: Bot):
     if call.from_user.id != ADMIN_ID:
-        await call.answer("⛔ Unauthorized.", show_alert=True)
+        await call.answer("⛔ Ruxsat yo'q.", show_alert=True)
         return
 
     request_id = int(call.data.split(":")[1])
     req        = await db.get_payment_request(request_id)
     if not req:
-        await call.answer("❌ Request not found.", show_alert=True)
+        await call.answer("❌ So'rov topilmadi.", show_alert=True)
         return
 
-    # Upgrade the user
     await db.set_premium(req["user_id"], True)
     await db.update_payment_status(request_id, "approved")
 
-    # Notify the user
     await bot.send_message(
         req["user_id"],
-        "🎉 **Congratulations!** Your payment has been verified.\n\n"
-        "⭐ You are now a **Premium** member! Enjoy watermark-free PDFs and priority processing.",
+        "🎉 **Tabriklaymiz!** To'lovingiz tasdiqlandi.\n\n"
+        "⭐ Siz endi **Premium** foydalanuvchisiz!\n"
+        "Suv belgisisiz PDF va tezkor skanerlashdan foydalaning! 🚀",
         parse_mode="Markdown"
     )
-
-    # Update the admin message
     await call.message.edit_caption(
-        call.message.caption + "\n\n✅ **APPROVED**",
+        call.message.caption + "\n\n✅ **TASDIQLANDI**",
         parse_mode="Markdown"
     )
-    await call.answer("✅ User upgraded to Premium!", show_alert=True)
+    await call.answer("✅ Foydalanuvchi Premium ga o'tkazildi!", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("pay_decline:"))
-async def cb_pay_decline(call: CallbackQuery, bot: Bot):
+async def cb_rad_etish(call: CallbackQuery, bot: Bot):
     if call.from_user.id != ADMIN_ID:
-        await call.answer("⛔ Unauthorized.", show_alert=True)
+        await call.answer("⛔ Ruxsat yo'q.", show_alert=True)
         return
 
     request_id = int(call.data.split(":")[1])
     req        = await db.get_payment_request(request_id)
     if not req:
-        await call.answer("❌ Request not found.", show_alert=True)
+        await call.answer("❌ So'rov topilmadi.", show_alert=True)
         return
 
     await db.update_payment_status(request_id, "declined")
 
-    # Notify the user
     await bot.send_message(
         req["user_id"],
-        "❌ Your payment receipt could not be verified.\n\n"
-        "Please double-check the receipt and re-submit, or contact the admin for help.",
+        "❌ **To'lov cheki tasdiqlanmadi.**\n\n"
+        "Chekni qayta tekshirib yuboring yoki admin bilan bog'laning.",
         parse_mode="Markdown"
     )
-
-    # Update the admin message
     await call.message.edit_caption(
-        call.message.caption + "\n\n❌ **DECLINED**",
+        call.message.caption + "\n\n❌ **RAD ETILDI**",
         parse_mode="Markdown"
     )
-    await call.answer("❌ Request declined.", show_alert=True)
+    await call.answer("❌ So'rov rad etildi.", show_alert=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SCAN FLOW — Mode selection
+#  SKANERLASH — REJIM TANLASH
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "scan_start")
-async def cb_scan_start(call: CallbackQuery, state: FSMContext):
-    await state.set_state(ScanSession.choosing_mode)
+async def cb_scan_boshlash(call: CallbackQuery, state: FSMContext):
+    await state.set_state(ScanSession.rejim_tanlash)
     await call.message.edit_text(
-        "📂 **Select Scan Mode**\n\n"
-        "Choose the type of document you want to scan:",
+        "📂 **Skanerlash Rejimini Tanlang**\n\n"
+        "Qanday hujjat skanerlayapsiz?",
         parse_mode="Markdown",
-        reply_markup=mode_selection_kb()
+        reply_markup=rejim_klaviatura()
     )
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("mode_"))
-async def cb_mode_selected(call: CallbackQuery, state: FSMContext):
-    mode = call.data.replace("mode_", "")
-    mode_labels = {
-        "a4":       "📄 A4 Document",
-        "passport": "🛂 Passport",
-        "id_card":  "🪪 ID Card",
-        "photo":    "🖼 Photo",
+async def cb_rejim_tanlandi(call: CallbackQuery, state: FSMContext):
+    rejim = call.data.replace("mode_", "")
+    rejim_nomlari = {
+        "a4":       "📄 A4 Hujjat",
+        "passport": "🛂 Pasport",
+        "id_card":  "🪪 ID Karta",
+        "photo":    "🖼 Rasm",
     }
-    await state.update_data(mode=mode, images=[])
-    await state.set_state(ScanSession.choosing_filter)
+    await state.update_data(mode=rejim, images=[])
+    await state.set_state(ScanSession.filtr_tanlash)
 
     await call.message.edit_text(
-        f"✅ Mode: **{mode_labels.get(mode, mode)}**\n\n"
-        f"🎨 Now choose a filter to apply to your scans:",
+        f"✅ Rejim: **{rejim_nomlari.get(rejim, rejim)}**\n\n"
+        f"🎨 Endi filtrni tanlang:",
         parse_mode="Markdown",
-        reply_markup=filter_selection_kb()
+        reply_markup=filtr_klaviatura()
     )
     await call.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SCAN FLOW — Filter selection
+#  SKANERLASH — FILTR TANLASH
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("filter_"))
-async def cb_filter_selected(call: CallbackQuery, state: FSMContext):
-    filter_type = call.data.replace("filter_", "")
-    filter_labels = {
-        "magic_color": "✨ Magic Color",
-        "bw":          "⚫ B&W",
-        "none":        "🎨 No Filter",
+async def cb_filtr_tanlandi(call: CallbackQuery, state: FSMContext):
+    filtr = call.data.replace("filter_", "")
+    filtr_nomlari = {
+        "magic_color": "✨ Sehrli Rang",
+        "bw":          "⚫ Qora-Oq",
+        "none":        "🎨 Filtrsiz",
     }
-    await state.update_data(filter_type=filter_type)
-    await state.set_state(ScanSession.collecting_images)
+    await state.update_data(filter_type=filtr)
+    await state.set_state(ScanSession.rasm_qabul)
 
     await call.message.edit_text(
-        f"✅ Filter: **{filter_labels.get(filter_type, filter_type)}**\n\n"
-        f"📸 Now send your photos one by one.\n"
-        f"When you're done, tap **Generate PDF**.",
+        f"✅ Filtr: **{filtr_nomlari.get(filtr, filtr)}**\n\n"
+        f"📸 Endi rasmlarni yuboring.\n"
+        f"Tugatgach **PDF yaratish** tugmasini bosing.",
         parse_mode="Markdown",
-        reply_markup=ready_to_process_kb()
+        reply_markup=pdf_tayyor_kb()
     )
     await call.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SCAN FLOW — Collect incoming photos
+#  SKANERLASH — RASMLARNI QABUL QILISH
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message(ScanSession.collecting_images, F.photo)
-async def handle_scan_photo(message: Message, state: FSMContext, bot: Bot):
-    """Buffer each incoming photo during the scan session."""
-    data      = await state.get_data()
-    images    = data.get("images", [])
-    file_id   = message.photo[-1].file_id  # highest resolution
+@router.message(ScanSession.rasm_qabul, F.photo)
+async def rasm_qabul(message: Message, state: FSMContext, bot: Bot):
+    data   = await state.get_data()
+    rasmlar = data.get("images", [])
+    rasmlar.append(message.photo[-1].file_id)
+    await state.update_data(images=rasmlar)
 
-    images.append(file_id)
-    await state.update_data(images=images)
-
-    count = len(images)
+    soni = len(rasmlar)
     await message.answer(
-        f"📸 Page **{count}** received.\n"
-        f"Send more pages or tap **Generate PDF** when ready.",
+        f"📸 **{soni}-sahifa** qabul qilindi.\n"
+        f"Yana rasm yuboring yoki **PDF yaratish** tugmasini bosing.",
         parse_mode="Markdown",
-        reply_markup=ready_to_process_kb()
+        reply_markup=pdf_tayyor_kb()
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SCAN FLOW — Generate PDF
+#  SKANERLASH — PDF YARATISH
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "generate_pdf")
-async def cb_generate_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
-    """Process all buffered images and return a single PDF."""
-    data        = await state.get_data()
-    file_ids    = data.get("images", [])
-    mode        = data.get("mode", "a4")
-    filter_type = data.get("filter_type", "magic_color")
+async def cb_pdf_yaratish(call: CallbackQuery, state: FSMContext, bot: Bot):
+    data     = await state.get_data()
+    file_ids = data.get("images", [])
+    rejim    = data.get("mode", "a4")
+    filtr    = data.get("filter_type", "magic_color")
 
     if not file_ids:
-        await call.answer("⚠️ No images added yet! Send at least one photo.", show_alert=True)
+        await call.answer("⚠️ Hali rasm yuborilmadi! Kamida bitta rasm yuboring.", show_alert=True)
         return
 
     user    = call.from_user
     premium = await db.is_premium(user.id)
-    add_wm  = not premium
+    suv_belgisi = not premium
 
     await call.message.edit_text(
-        f"⚙️ Processing **{len(file_ids)}** page(s)…\n"
-        f"{'🆓 Watermark will be added (Free plan).' if add_wm else '⭐ Premium: no watermark.'}",
+        f"⚙️ **{len(file_ids)} ta sahifa** ishlanmoqda…\n"
+        f"{'🆓 Suv belgisi qo\'shiladi (Bepul tarif).' if suv_belgisi else '⭐ Premium: suv belgisi yo\'q.'}",
         parse_mode="Markdown"
     )
 
-    processed_images = []
+    ishlangan_rasmlar = []
     for fid in file_ids:
-        # Download the file from Telegram servers
-        file_info  = await bot.get_file(fid)
-        buf        = io.BytesIO()
-        await bot.download_file(file_info.file_path, buf)
-        raw_bytes  = buf.getvalue()
+        fayl_info = await bot.get_file(fid)
+        buf       = io.BytesIO()
+        await bot.download_file(fayl_info.file_path, buf)
 
-        # Run the full scan pipeline
-        processed  = utils.process_image(
-            img_bytes   = raw_bytes,
-            mode        = mode,
-            filter_type = filter_type,
+        ishlangan = utils.process_image(
+            img_bytes   = buf.getvalue(),
+            mode        = rejim,
+            filter_type = filtr,
             apply_crop  = True,
-            watermark   = add_wm,
+            watermark   = suv_belgisi,
         )
-        processed_images.append(processed)
+        ishlangan_rasmlar.append(ishlangan)
 
-    # Merge all pages into one PDF
-    pdf_bytes = utils.images_to_pdf(processed_images)
-    pages     = len(processed_images)
+    pdf_bayt = utils.images_to_pdf(ishlangan_rasmlar)
 
-    # Send the PDF
     await bot.send_document(
-        chat_id     = user.id,
-        document    = BufferedInputFile(pdf_bytes, filename="scan.pdf"),
-        caption     = (
-            f"📄 Your scanned PDF is ready!\n"
-            f"📑 Pages: {pages}\n"
-            f"{'🆓 Watermark added. Upgrade to Premium for watermark-free PDFs!' if add_wm else '⭐ Premium: no watermark!'}"
+        chat_id  = user.id,
+        document = BufferedInputFile(pdf_bayt, filename="skan.pdf"),
+        caption  = (
+            f"📄 **PDF tayyor!**\n"
+            f"📑 Sahifalar soni: {len(ishlangan_rasmlar)}\n"
+            f"{'🆓 Suv belgisi qo\'shildi. Premium olish uchun /start bosing!' if suv_belgisi else '⭐ Premium: suv belgisi yo\'q!'}"
         ),
     )
 
-    # Clear the session and show main menu
     await state.clear()
     await bot.send_message(
         user.id,
-        "✅ Done! What would you like to do next?",
-        reply_markup=main_menu_kb(premium)
+        "✅ Tayyor! Yana nima qilmoqchisiz?",
+        reply_markup=asosiy_menu(premium)
     )
 
 
 @router.callback_query(F.data == "clear_session")
-async def cb_clear_session(call: CallbackQuery, state: FSMContext):
+async def cb_tozalash(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text(
-        "🗑 Session cleared.\n\nStart a new scan from the main menu.",
+        "🗑 Sessiya tozalandi.\n\nAsosiy menyudan yangi skanerlashni boshlang.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 Main Menu", callback_data="main_menu")]
+            [InlineKeyboardButton(text="🏠 Asosiy Menyu", callback_data="main_menu")]
         ])
     )
     await call.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  AI ASSISTANT
+#  AI YORDAMCHI
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "ai_start")
-async def cb_ai_start(call: CallbackQuery, state: FSMContext):
-    await state.set_state(ScanSession.waiting_ai_question)
+async def cb_ai_boshlash(call: CallbackQuery, state: FSMContext):
+    await state.set_state(ScanSession.ai_savol_kutish)
     await call.message.edit_text(
-        "🤖 **AI Document Assistant**\n\n"
-        "Send me a **photo** of your document together with your question, "
-        "or just send the photo first and I'll ask you what you want to know.\n\n"
-        "Examples:\n"
-        "• _'What is this document about?'_\n"
-        "• _'Translate the text to English'_\n"
-        "• _'What is the total amount on this invoice?'_",
+        "🤖 **AI Hujjat Yordamchisi**\n\n"
+        "Hujjat **rasmini** yuboring va savolingizni yozing.\n\n"
+        "Misol uchun:\n"
+        "• _'Bu hujjat nima haqida?'_\n"
+        "• _'Matnni o'zbek tiliga tarjima qil'_\n"
+        "• _'Umumiy summani ayt'_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="main_menu")]
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="main_menu")]
         ])
     )
     await call.answer()
 
 
-@router.message(ScanSession.waiting_ai_question, F.photo)
-async def handle_ai_photo(message: Message, state: FSMContext, bot: Bot):
-    """User sends a photo + optional caption question."""
-    question = message.caption or "Please describe and summarise this document."
+@router.message(ScanSession.ai_savol_kutish, F.photo)
+async def ai_rasm_qabul(message: Message, state: FSMContext, bot: Bot):
+    savol = message.caption or "Iltimos, bu hujjatni tahlil qiling va qisqacha mazmunini aytib bering."
 
-    processing_msg = await message.answer("🤖 Analysing your document… ⏳")
+    jarayon_xabari = await message.answer("🤖 Hujjat tahlil qilinmoqda… ⏳")
 
-    # Download image
-    file_info = await bot.get_file(message.photo[-1].file_id)
+    fayl_info = await bot.get_file(message.photo[-1].file_id)
     buf       = io.BytesIO()
-    await bot.download_file(file_info.file_path, buf)
+    await bot.download_file(fayl_info.file_path, buf)
 
-    # Call GPT-4o vision
-    answer = await utils.ask_ai_about_image(buf.getvalue(), question)
+    javob = await utils.ask_ai_about_image(buf.getvalue(), savol)
 
-    await processing_msg.delete()
+    await jarayon_xabari.delete()
     await message.answer(
-        f"🤖 **AI Response:**\n\n{answer}",
+        f"🤖 **AI Javobi:**\n\n{javob}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Ask Another",  callback_data="ai_start")],
-            [InlineKeyboardButton(text="🏠 Main Menu",    callback_data="main_menu")],
+            [InlineKeyboardButton(text="🔄 Yana so'rash",   callback_data="ai_start")],
+            [InlineKeyboardButton(text="🏠 Asosiy Menyu",   callback_data="main_menu")],
         ])
     )
     await state.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  ADMIN PANEL
+#  ADMIN PANELI
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Unauthorized.")
+        await message.answer("⛔ Ruxsat yo'q.")
         return
     await message.answer(
-        "🛠 **Admin Panel**\n\nSelect an action:",
+        "🛠 **Admin Paneli**\n\nKerakli amalni tanlang:",
         parse_mode="Markdown",
         reply_markup=admin_panel_kb()
     )
 
 
 @router.callback_query(F.data == "admin_stats")
-async def cb_admin_stats(call: CallbackQuery):
+async def cb_statistika(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
-        await call.answer("⛔ Unauthorized.", show_alert=True)
+        await call.answer("⛔ Ruxsat yo'q.", show_alert=True)
         return
-    total   = await db.get_user_count()
+    jami    = await db.get_user_count()
     premium = await db.get_premium_count()
-    free    = total - premium
+    bepul   = jami - premium
     await call.message.edit_text(
-        f"📊 **Bot Statistics**\n\n"
-        f"👥 Total users:   **{total}**\n"
-        f"⭐ Premium users: **{premium}**\n"
-        f"🆓 Free users:    **{free}**",
+        f"📊 **Bot Statistikasi**\n\n"
+        f"👥 Jami foydalanuvchilar: **{jami}**\n"
+        f"⭐ Premium foydalanuvchilar: **{premium}**\n"
+        f"🆓 Bepul foydalanuvchilar: **{bepul}**",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")]
         ])
     )
     await call.answer()
 
 
 @router.callback_query(F.data == "admin_back")
-async def cb_admin_back(call: CallbackQuery):
+async def cb_admin_orqaga(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         await call.answer()
         return
     await call.message.edit_text(
-        "🛠 **Admin Panel**\n\nSelect an action:",
+        "🛠 **Admin Paneli**\n\nKerakli amalni tanlang:",
         parse_mode="Markdown",
         reply_markup=admin_panel_kb()
     )
     await call.answer()
 
-
-# ── Set Card Number ──────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin_set_card")
-async def cb_admin_set_card(call: CallbackQuery, state: FSMContext):
+async def cb_karta_yangilash(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
-        await call.answer("⛔ Unauthorized.", show_alert=True)
+        await call.answer("⛔ Ruxsat yo'q.", show_alert=True)
         return
-    await state.set_state(AdminStates.waiting_card_number)
-    current = await db.get_setting("card_number", "Not set")
+    await state.set_state(AdminHolat.karta_kutish)
+    joriy = await db.get_setting("card_number", "O'rnatilmagan")
     await call.message.edit_text(
-        f"💳 **Update Payment Card Number**\n\n"
-        f"Current value: `{current}`\n\n"
-        f"Reply with the new card number:",
+        f"💳 **Karta Raqamini Yangilash**\n\n"
+        f"Joriy raqam: `{joriy}`\n\n"
+        f"Yangi karta raqamini yuboring:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_back")]
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_back")]
         ])
     )
     await call.answer()
 
 
-@router.message(AdminStates.waiting_card_number)
-async def handle_card_number(message: Message, state: FSMContext):
+@router.message(AdminHolat.karta_kutish)
+async def karta_qabul(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    new_card = message.text.strip()
-    await db.set_setting("card_number", new_card)
+    yangi_karta = message.text.strip()
+    await db.set_setting("card_number", yangi_karta)
     await state.clear()
     await message.answer(
-        f"✅ Card number updated to:\n`{new_card}`",
+        f"✅ Karta raqami yangilandi:\n`{yangi_karta}`",
         parse_mode="Markdown",
         reply_markup=admin_panel_kb()
     )
 
 
-# ── Broadcast ────────────────────────────────────────────────────────────────
-
 @router.callback_query(F.data == "admin_broadcast")
-async def cb_admin_broadcast(call: CallbackQuery, state: FSMContext):
+async def cb_xabar_yuborish(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
-        await call.answer("⛔ Unauthorized.", show_alert=True)
+        await call.answer("⛔ Ruxsat yo'q.", show_alert=True)
         return
-    await state.set_state(AdminStates.waiting_broadcast_msg)
+    await state.set_state(AdminHolat.xabar_kutish)
     await call.message.edit_text(
-        "📢 **Broadcast Message**\n\n"
-        "Type the message you want to send to ALL users.\n"
-        "Supports Markdown formatting.",
+        "📢 **Hammaga Xabar Yuborish**\n\n"
+        "Barcha foydalanuvchilarga yuboriladigan xabarni yozing.\n"
+        "Markdown formatidan foydalanishingiz mumkin.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_back")]
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_back")]
         ])
     )
     await call.answer()
 
 
-@router.message(AdminStates.waiting_broadcast_msg)
-async def handle_broadcast(message: Message, state: FSMContext, bot: Bot):
+@router.message(AdminHolat.xabar_kutish)
+async def xabar_yuborish(message: Message, state: FSMContext, bot: Bot):
     if message.from_user.id != ADMIN_ID:
         return
 
-    broadcast_text = message.text
+    xabar_matni = message.text
     await state.clear()
 
-    user_ids    = await db.get_all_user_ids()
-    sent        = 0
-    failed      = 0
-    status_msg  = await message.answer(f"📤 Sending to {len(user_ids)} users… please wait.")
+    foydalanuvchilar = await db.get_all_user_ids()
+    yuborildi        = 0
+    xato             = 0
+    holat_xabari     = await message.answer(f"📤 {len(foydalanuvchilar)} ta foydalanuvchiga yuborilmoqda…")
 
-    for uid in user_ids:
+    for uid in foydalanuvchilar:
         try:
-            await bot.send_message(uid, broadcast_text, parse_mode="Markdown")
-            sent += 1
+            await bot.send_message(uid, xabar_matni, parse_mode="Markdown")
+            yuborildi += 1
         except Exception:
-            failed += 1
-        await asyncio.sleep(0.05)  # Respect Telegram rate limits (20 msg/s)
+            xato += 1
+        await asyncio.sleep(0.05)
 
-    await status_msg.edit_text(
-        f"✅ **Broadcast complete!**\n\n"
-        f"📨 Sent:   {sent}\n"
-        f"❌ Failed: {failed}",
+    await holat_xabari.edit_text(
+        f"✅ **Xabar yuborish yakunlandi!**\n\n"
+        f"📨 Yuborildi: **{yuborildi}**\n"
+        f"❌ Xato: **{xato}**",
         parse_mode="Markdown",
         reply_markup=admin_panel_kb()
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  FALLBACK — handle unexpected messages
+#  NOMA'LUM XABARLAR
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.message()
-async def fallback(message: Message, state: FSMContext):
-    await register_user(message)
-    current_state = await state.get_state()
+async def noma_lum(message: Message, state: FSMContext):
+    await foydalanuvchi_qoshish(message)
+    joriy_holat = await state.get_state()
 
-    if current_state == ScanSession.collecting_images.state:
-        # User sent something other than a photo while in scan mode
+    if joriy_holat == ScanSession.rasm_qabul.state:
         await message.answer(
-            "📸 Please send a **photo** to add it to your scan, "
-            "or tap **Generate PDF** to finish.",
+            "📸 Iltimos, **rasm** yuboring yoki **PDF yaratish** tugmasini bosing.",
             parse_mode="Markdown",
-            reply_markup=ready_to_process_kb()
+            reply_markup=pdf_tayyor_kb()
         )
     else:
         premium = await db.is_premium(message.from_user.id)
         await message.answer(
-            "👋 Use the menu below to get started!",
-            reply_markup=main_menu_kb(premium)
+            "👋 Quyidagi menyudan boshlang!",
+            reply_markup=asosiy_menu(premium)
         )
