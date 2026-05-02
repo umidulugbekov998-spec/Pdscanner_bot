@@ -1,8 +1,33 @@
+# requirements.txt — Barcha kutubxonalar
+
+# Bot framework
 aiogram==3.13.1
+
+# Database
 aiosqlite==0.20.0
+
+# Rasm ishlov berish
 opencv-python-headless==4.10.0.84
 Pillow==10.4.0
-img2pdf==0.5.1
-openai==1.14.3
 numpy==1.26.4
+
+# PDF
+img2pdf==0.5.1
+
+# OCR — rasmdan matn o'qish
+pytesseract==0.3.13
+
+# QR kod yaratish va o'qish
+qrcode[pil]==7.4.2
+pyzbar==0.1.9
+
+# Fon o'chirish
+rembg==2.0.50
+
+# Valyuta va tarjimon
+requests==2.31.0
+googletrans==4.0.0rc1
+
+# OpenAI (ixtiyoriy)
+openai==1.14.3
 httpx==0.24.1
